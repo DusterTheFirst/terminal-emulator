@@ -1,0 +1,14 @@
+[package]
+name = "idk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+noto-sans-mono-bitmap = { version = "0.1.5", default-features = false, features = [
+    "size_18",
+    "regular",
+] }
+pixels = "0.9.0"
+winit = "0.26.1"
+
+[features]
