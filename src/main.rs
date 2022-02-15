@@ -1,6 +1,12 @@
 #![feature(slice_as_chunks)]
 
-use std::{thread, time::Duration};
+use std::{
+    io::{Read, Write},
+    process::{Command, Stdio},
+    sync::mpsc::RecvError,
+    thread,
+    time::Duration,
+};
 
 use pixels::{wgpu::Color, Pixels, SurfaceTexture};
 use terminal::{Terminal, HEIGHT, WIDTH};
@@ -39,8 +45,6 @@ fn main() {
         Terminal::new(pixels)
     };
 
-    terminal.put_string("Hello there!\n", [255, 20, 255]);
-
     let proxy = event_loop.create_proxy();
 
     thread::spawn(move || loop {
@@ -51,17 +55,93 @@ fn main() {
         thread::sleep(Duration::from_millis(500));
     });
 
-    let proxy = event_loop.create_proxy();
+    let (stdin_send, stdin_recv) = std::sync::mpsc::channel();
 
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_millis(100));
-        proxy.send_event(UserEvent::String("hello".into())).unwrap();
-    });
+    {
+        let mut command = Command::new("cmd.exe")
+            .args(["/U", "/Q"])
+            .stderr(Stdio::piped())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        thread::spawn({
+            let mut stdin = command.stdin.take().unwrap();
+
+            move || -> Result<(), RecvError> {
+                let mut command = String::new();
+
+                loop {
+                    let char = stdin_recv.recv()?;
+
+                    match char {
+                        '\u{8}' => {
+                            command.pop();
+                        }
+                        _ => command.push(char),
+                    }
+
+                    if char == '\n' {
+                        stdin.write_all(command.as_bytes()).unwrap();
+                        command.clear();
+                    }
+                }
+            }
+        });
+
+        thread::spawn({
+            let mut stdout = command.stdout.take().unwrap();
+            let proxy = event_loop.create_proxy();
+
+            move || {
+                let mut buffer = [0; 1028];
+                loop {
+                    let amount_read = stdout.read(&mut buffer).unwrap();
+
+                    let string = String::from_utf8(buffer[..amount_read].to_vec());
+
+                    match string {
+                        Ok(string) => proxy
+                            .send_event(UserEvent::String(string, [255, 255, 255]))
+                            .unwrap(),
+                        Err(utf8_error) => proxy
+                            .send_event(UserEvent::String(
+                                format!(
+                                    "KERNEL ERROR: encountered a non-utf8 string: {utf8_error}"
+                                ),
+                                [240, 80, 40],
+                            ))
+                            .unwrap(),
+                    }
+                }
+            }
+        });
+
+        thread::spawn({
+            let mut stderr = command.stderr.take().unwrap();
+            let proxy = event_loop.create_proxy();
+
+            move || {
+                let mut buffer = [0; 1028];
+
+                loop {
+                    let amount_read = stderr.read(&mut buffer).unwrap();
+
+                    let string = String::from_utf8(buffer[..amount_read].to_vec()).unwrap();
+
+                    proxy
+                        .send_event(UserEvent::String(string, [255, 150, 150]))
+                        .unwrap();
+                }
+            }
+        });
+    };
 
     #[derive(Debug)]
     enum UserEvent {
         CursorFlash(bool),
-        String(String),
+        String(String, [u8; 3]),
     }
 
     event_loop.run(move |event, _window, control_flow| match event {
@@ -69,7 +149,7 @@ fn main() {
             match event {
                 UserEvent::CursorFlash(true) => terminal.cursor_on(),
                 UserEvent::CursorFlash(false) => terminal.cursor_off(),
-                UserEvent::String(string) => terminal.put_string(&string, [255, 200, 100]),
+                UserEvent::String(string, color) => terminal.put_string(&string, color),
             }
 
             window.request_redraw();
@@ -80,7 +160,17 @@ fn main() {
                 terminal.resize_surface(width, height);
             }
             WindowEvent::ReceivedCharacter(char) => {
-                terminal.put_char(char, [255, 255, 255]);
+                terminal.put_char(char, [255, 200, 100]);
+                let send_result = if char == '\r' {
+                    stdin_send.send('\n')
+                } else {
+                    stdin_send.send(char)
+                };
+
+                if send_result.is_err() {
+                    *control_flow = ControlFlow::Exit;
+                }
+
                 window.request_redraw();
             }
             WindowEvent::KeyboardInput { input, .. } => {

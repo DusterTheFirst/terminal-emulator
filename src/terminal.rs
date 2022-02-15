@@ -48,11 +48,15 @@ impl Terminal {
     pub fn cursor_on(&mut self) {
         let buffer = self.pixels.get_frame();
 
-        draw_char(&mut create_window(buffer, self.column, self.row), '_', [255, 255, 255]);
+        draw_char(
+            &mut create_window(buffer, self.column, self.row),
+            '_',
+            [255, 255, 255],
+        );
     }
 
     pub fn put_string(&mut self, string: &str, color: [u8; 3]) {
-        for char in string.chars() {
+        for char in string.chars().filter(|char| *char != '\r') {
             self.put_char(char, color)
         }
     }
@@ -62,7 +66,7 @@ impl Terminal {
 
         match char {
             // NULL
-            '\0' => {}
+            '\0' | '\t' => {}
             // Backspace
             '\u{0008}' => {
                 if self.column == 0 && self.row == 0 {
@@ -88,7 +92,11 @@ impl Terminal {
                 self.column = 0;
             }
             _ => {
-                draw_char(&mut create_window(buffer, self.column, self.row), char, color);
+                draw_char(
+                    &mut create_window(buffer, self.column, self.row),
+                    char,
+                    color,
+                );
 
                 self.column += 1;
             }
@@ -111,7 +119,11 @@ impl Terminal {
             self.row = ROWS - 1;
         }
 
-        draw_char(&mut create_window(buffer, self.column, self.row), '_', color);
+        draw_char(
+            &mut create_window(buffer, self.column, self.row),
+            '_',
+            [255, 255, 255],
+        );
     }
 }
 
@@ -120,8 +132,12 @@ type Row<'w> = &'w mut [Pixel; CHAR_WIDTH];
 type Window<'w> = [Row<'w>; CHAR_HEIGHT as usize];
 
 fn draw_char(window: &mut Window, char: char, [r, g, b]: [u8; 3]) {
-    let bitmap = get_bitmap(char, FontWeight::Regular, BitmapHeight::Size18)
-        .unwrap_or_else(|| panic!("unsupported char: {char}"))
+    let bitmap = get_bitmap(char, FontWeight::Regular, CHAR_HEIGHT)
+        .unwrap_or_else(|| {
+            eprintln!("unsupported char: {char:?} Unicode: {:#X}", char as u32);
+
+            get_bitmap('?', FontWeight::Regular, CHAR_HEIGHT).expect("question mark always exists")
+        })
         .bitmap();
 
     for (bitmap_row, window_row) in bitmap.iter().zip(window.iter_mut()) {
